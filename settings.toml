@@ -17,3 +17,9 @@ basic_auth.password = "password"
 db.mongodb_uri = "mongodb://tesp-db:27017"
 pulsar.url = "http://pulsar_rest:8913"
 logging.output_json = false
+# Credentials for stage-in/stage-out (curl/wget) — sent only to the listed hosts
+# Override via env: TESP_API_STAGING__AUTH__USERNAME / __PASSWORD / __HOSTS
+[default.staging.auth]
+username = ""
+password = ""
+hosts = []
