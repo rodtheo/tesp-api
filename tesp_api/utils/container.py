@@ -6,10 +6,35 @@ from typing import Dict, List, Tuple, Optional, Union
 
 from pymonad.maybe import Nothing, Maybe, Just
 
+from tesp_api.config.properties import properties
 from tesp_api.repository.model.task import TesTaskExecutor, TesTaskOutput, TesTaskIOType
 from tesp_api.utils.functional import get_else_throw, maybe_of
 
 SHELL_PATTERN = re.compile(r"[|&;<>(){}$*?\"'\\]")
+
+
+def _staging_credentials(url: str) -> Optional[Tuple[str, str]]:
+    # Credentials are only sent to hosts listed in staging.auth.hosts, never to arbitrary input/output URLs
+    username = properties.get("staging.auth.username")
+    password = properties.get("staging.auth.password")
+    hosts = properties.get("staging.auth.hosts") or []
+    if not username or password is None:
+        return None
+    parsed = urlparse(url)
+    host_port = f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname
+    if parsed.hostname in hosts or host_port in hosts:
+        return str(username), str(password)
+    return None
+
+
+def _curl_auth(url: str) -> str:
+    creds = _staging_credentials(url)
+    return f"--user {shlex.quote(f'{creds[0]}:{creds[1]}')} " if creds else ""
+
+
+def _wget_auth(url: str) -> str:
+    creds = _staging_credentials(url)
+    return f"--user={shlex.quote(creds[0])} --password={shlex.quote(creds[1])} " if creds else ""
 
 class ContainerCommandBuilder:
     def __init__(self, container_type: str) -> None:
@@ -255,12 +280,12 @@ def stage_in_command(
         if input_type == TesTaskIOType.DIRECTORY:
             # Recursive download
             commands.append(
-                f"wget -e robots=off --mirror --no-parent --no-host-directories "
+                f"wget {_wget_auth(url)}-e robots=off --mirror --no-parent --no-host-directories "
                 f"--directory-prefix={shlex.quote(filename)} {shlex.quote(url)}"
             )
         else:
             # Single file download
-            commands.append(f"curl -f -o {shlex.quote(filename)} {shlex.quote(url)}")
+            commands.append(f"curl -f {_curl_auth(url)}-o {shlex.quote(filename)} {shlex.quote(url)}")
     
     if commands:
         builder.with_command(["sh", "-c", " && ".join(commands)])
@@ -340,11 +365,13 @@ def stage_out_command(
             # Recursive upload
             cmd = (
                 f"find {shlex.quote(path)} -type f -exec "
-                f"curl -f -X POST -F 'file=@{{}}' {shlex.quote(url)} \\;"
+                #f"curl -f -X POST -F 'file=@{{}}' {shlex.quote(url)} \\;"
+                f"curl -f {_curl_auth(url)}--upload-file '{{}}' {shlex.quote(url)} \\;"
             )
         else:
             # Single file upload
-            cmd = f"curl -f -X POST -F 'file=@{shlex.quote(path)}' {shlex.quote(url)}"
+            # cmd = f"curl -f -X POST -F 'file=@{shlex.quote(path)}' {shlex.quote(url)}"
+            cmd = f"curl -f {_curl_auth(url)}--upload-file {shlex.quote(path)} {shlex.quote(url)}"
         
         commands.append(cmd)
     
