@@ -7,6 +7,12 @@ services:
     image: tesp-api
     environment:
       - CONTAINER_TYPE=singularity  # Set to "docker", "singularity", or "both"
+      - TESP_API_BASIC_AUTH__ENABLE=true # Enable basic authentication (true or false)
+      - TESP_API_BASIC_AUTH__USERNAME=admin # Set the username for basic authentication
+      - TESP_API_BASIC_AUTH__PASSWORD=adminadmin # Set the password for basic authentication
+      - TESP_API_STAGING__AUTH__USERNAME=admin # Credentials used by stage-in/stage-out curl/wget
+      - TESP_API_STAGING__AUTH__PASSWORD=adminadmin
+      - 'TESP_API_STAGING__AUTH__HOSTS=["s3-rustfs:8090"]' # Only these hosts receive the credentials
     container_name: tesp-api
     privileged: true
     ports:
@@ -14,10 +20,11 @@ services:
     depends_on:
       - tesp-db
     volumes:
+      - ./data:/data
       - ./:/app
       - /opt/pysetup/files/staging/:/opt/pysetup/files/staging/
-      #    extra_hosts:
-      #      - "host.docker.internal:host-gateway"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   tesp-db:
     image: mongo:latest
@@ -49,9 +56,61 @@ services:
       - /opt/pysetup/files/staging/:/opt/pysetup/files/staging/
       - /var/run/docker.sock:/var/run/docker.sock
 
+  s3-rustfs:
+    image: rustfs/rustfs:latest
+    container_name: s3-rustfs
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Web console
+      - "8090:8090" # WebDAV API (host 8090 -> container 8090)
+    volumes:
+      - s3-data:/data
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-admin}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:-adminadmin}
+      RUSTFS_WEBDAV_ENABLE: "true"
+      RUSTFS_WEBDAV_ADDRESS: "0.0.0.0:8090"
+      RUSTFS_WEBDAV_TLS_ENABLED: "false"   # local/dev only
+    healthcheck:
+      test:
+        - "CMD"
+        - "curl"
+        - "-so"
+        - "/dev/null"
+        - "http://localhost:9000/"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  s3-init:
+    image: minio/mc:latest
+    container_name: s3-init
+    depends_on:
+      s3-rustfs:
+        condition: service_healthy
+    environment:
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-admin}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-adminadmin}
+      S3_BUCKET: ${S3_BUCKET:-data}
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        mc alias set s3 http://s3:9000 "$$S3_ACCESS_KEY_ID" "$$S3_SECRET_ACCESS_KEY"
+        mc mb --ignore-existing s3/"$$S3_BUCKET"
+        echo "Endpoint URL: 'http://localhost:9000'"
+        echo "Access Key: '$$S3_ACCESS_KEY_ID'"
+        echo "Secret Key: '$$S3_SECRET_ACCESS_KEY'"
+        echo "Bucket '$$S3_BUCKET' ready."
+    restart: "no"
+
+
 # Some cloud providers may require a lower MTU!
 networks:
   default:
     driver: bridge
     driver_opts:
       com.docker.network.driver.mtu: 1442
+
+volumes:
+  s3-data:
